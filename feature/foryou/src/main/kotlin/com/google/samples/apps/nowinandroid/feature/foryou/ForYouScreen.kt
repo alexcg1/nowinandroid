@@ -19,12 +19,14 @@ package com.google.samples.apps.nowinandroid.feature.foryou
 import android.net.Uri
 import android.os.Build.VERSION
 import android.os.Build.VERSION_CODES
+import android.webkit.URLUtil
 import androidx.activity.compose.ReportDrawnWhen
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.Orientation
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -58,6 +60,13 @@ import androidx.compose.foundation.lazy.staggeredgrid.StaggeredGridItemSpan
 import androidx.compose.foundation.lazy.staggeredgrid.rememberLazyStaggeredGridState
 import androidx.compose.foundation.shape.CornerSize
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
@@ -65,6 +74,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.toArgb
@@ -85,6 +97,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.google.accompanist.permissions.ExperimentalPermissionsApi
 import com.google.accompanist.permissions.PermissionStatus.Denied
 import com.google.accompanist.permissions.rememberPermissionState
+import com.google.samples.apps.nowinandroid.core.data.model.UserUrl
 import com.google.samples.apps.nowinandroid.core.designsystem.component.DynamicAsyncImage
 import com.google.samples.apps.nowinandroid.core.designsystem.component.NiaButton
 import com.google.samples.apps.nowinandroid.core.designsystem.component.NiaIconToggleButton
@@ -105,27 +118,31 @@ import com.google.samples.apps.nowinandroid.core.ui.launchCustomChromeTab
 import com.google.samples.apps.nowinandroid.core.ui.newsFeed
 
 @Composable
-internal fun ForYouScreen(
+internal fun ForYouRoute(
     onTopicClick: (String) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ForYouViewModel = hiltViewModel(),
+    userUrlViewModel: UserUrlViewModel = hiltViewModel(),
 ) {
     val onboardingUiState by viewModel.onboardingUiState.collectAsStateWithLifecycle()
     val feedState by viewModel.feedState.collectAsStateWithLifecycle()
     val isSyncing by viewModel.isSyncing.collectAsStateWithLifecycle()
     val deepLinkedUserNewsResource by viewModel.deepLinkedNewsResource.collectAsStateWithLifecycle()
+    val userUrls by userUrlViewModel.userUrls.collectAsStateWithLifecycle()
 
     ForYouScreen(
         isSyncing = isSyncing,
         onboardingUiState = onboardingUiState,
         feedState = feedState,
         deepLinkedUserNewsResource = deepLinkedUserNewsResource,
+        userUrls = userUrls,
         onTopicCheckedChanged = viewModel::updateTopicSelection,
         onDeepLinkOpened = viewModel::onDeepLinkOpened,
         onTopicClick = onTopicClick,
         saveFollowedTopics = viewModel::dismissOnboarding,
         onNewsResourcesCheckedChanged = viewModel::updateNewsResourceSaved,
         onNewsResourceViewed = { viewModel.setNewsResourceViewed(it, true) },
+        onAddUrl = userUrlViewModel::addUrl,
         modifier = modifier,
     )
 }
@@ -136,27 +153,91 @@ internal fun ForYouScreen(
     onboardingUiState: OnboardingUiState,
     feedState: NewsFeedUiState,
     deepLinkedUserNewsResource: UserNewsResource?,
+    userUrls: List<UserUrl>,
     onTopicCheckedChanged: (String, Boolean) -> Unit,
     onTopicClick: (String) -> Unit,
     onDeepLinkOpened: (String) -> Unit,
     saveFollowedTopics: () -> Unit,
     onNewsResourcesCheckedChanged: (String, Boolean) -> Unit,
     onNewsResourceViewed: (String) -> Unit,
+    onAddUrl: (String) -> Unit,
     modifier: Modifier = Modifier,
 ) {
     val isOnboardingLoading = onboardingUiState is OnboardingUiState.Loading
     val isFeedLoading = feedState is NewsFeedUiState.Loading
+    var showAddUrlDialog by remember { mutableStateOf(false) }
+    var urlInput by remember { mutableStateOf("") }
+    var showUrlError by remember { mutableStateOf(false) }
 
     // This code should be called when the UI is ready for use and relates to Time To Full Display.
     ReportDrawnWhen { !isSyncing && !isOnboardingLoading && !isFeedLoading }
 
-    val itemsAvailable = feedItemsSize(feedState, onboardingUiState)
+    // Calculate total items including user URLs
+    val itemsAvailable = feedItemsSize(feedState, onboardingUiState) + userUrls.size
 
     val state = rememberLazyStaggeredGridState()
     val scrollbarState = state.scrollbarState(
         itemsAvailable = itemsAvailable,
     )
     TrackScrollJank(scrollableState = state, stateName = "forYou:feed")
+
+    if (showAddUrlDialog) {
+        AlertDialog(
+            onDismissRequest = { 
+                showAddUrlDialog = false 
+                urlInput = ""
+                showUrlError = false
+            },
+            title = { Text(stringResource(R.string.feature_foryou_add_url_dialog_title)) },
+            text = {
+                Column {
+                    OutlinedTextField(
+                        value = urlInput,
+                        onValueChange = { 
+                            urlInput = it 
+                            showUrlError = false
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        label = { Text(stringResource(R.string.feature_foryou_add_url_dialog_hint)) },
+                        isError = showUrlError,
+                        supportingText = { 
+                            if (showUrlError) {
+                                Text(stringResource(R.string.feature_foryou_add_url_error))
+                            }
+                        }
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        // Validate URL format
+                        val formattedUrl = if (!urlInput.startsWith("http")) "https://$urlInput" else urlInput
+                        if (URLUtil.isValidUrl(formattedUrl)) {
+                            onAddUrl(urlInput)
+                            showAddUrlDialog = false
+                            urlInput = ""
+                        } else {
+                            showUrlError = true
+                        }
+                    }
+                ) {
+                    Text(stringResource(R.string.feature_foryou_add_url_dialog_add))
+                }
+            },
+            dismissButton = {
+                Button(
+                    onClick = { 
+                        showAddUrlDialog = false
+                        urlInput = ""
+                        showUrlError = false
+                    }
+                ) {
+                    Text(stringResource(R.string.feature_foryou_add_url_dialog_cancel))
+                }
+            }
+        )
+    }
 
     Box(
         modifier = modifier
@@ -171,6 +252,39 @@ internal fun ForYouScreen(
                 .testTag("forYou:feed"),
             state = state,
         ) {
+            // Add URL button
+            item(span = StaggeredGridItemSpan.FullLine) {
+                Row(
+                    horizontalArrangement = Arrangement.End,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 16.dp)
+                ) {
+                    FloatingActionButton(
+                        onClick = { showAddUrlDialog = true },
+                        modifier = Modifier.padding(end = 8.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Add,
+                            contentDescription = stringResource(R.string.feature_foryou_add_url)
+                        )
+                    }
+                }
+            }
+            
+            // User URLs
+            if (userUrls.isNotEmpty()) {
+                items(userUrls.size, span = { StaggeredGridItemSpan.FullLine }) { index ->
+                    val userUrl = userUrls[index]
+                    UserUrlCard(
+                        userUrl = userUrl,
+                        modifier = Modifier
+                            .padding(bottom = 8.dp)
+                            .fillMaxWidth()
+                    )
+                }
+            }
+
             onboarding(
                 onboardingUiState = onboardingUiState,
                 onTopicCheckedChanged = onTopicCheckedChanged,
@@ -247,6 +361,40 @@ internal fun ForYouScreen(
         deepLinkedUserNewsResource,
         onDeepLinkOpened,
     )
+}
+
+@Composable
+private fun UserUrlCard(
+    userUrl: UserUrl,
+    modifier: Modifier = Modifier
+) {
+    val context = LocalContext.current
+    val backgroundColor = MaterialTheme.colorScheme.surface.toArgb()
+    
+    Card(
+        modifier = modifier
+            .clickable {
+                launchCustomChromeTab(
+                    context = context,
+                    uri = Uri.parse(userUrl.url),
+                    toolbarColor = backgroundColor,
+                )
+            },
+        elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(16.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = userUrl.title,
+                style = MaterialTheme.typography.titleMedium,
+                modifier = Modifier.weight(1f)
+            )
+        }
+    }
 }
 
 /**
@@ -514,12 +662,14 @@ fun ForYouScreenPopulatedFeed(
                 feed = userNewsResources,
             ),
             deepLinkedUserNewsResource = null,
+            userUrls = emptyList(),
             onTopicCheckedChanged = { _, _ -> },
             saveFollowedTopics = {},
             onNewsResourcesCheckedChanged = { _, _ -> },
             onNewsResourceViewed = {},
             onTopicClick = {},
             onDeepLinkOpened = {},
+            onAddUrl = {},
         )
     }
 }
@@ -538,12 +688,14 @@ fun ForYouScreenOfflinePopulatedFeed(
                 feed = userNewsResources,
             ),
             deepLinkedUserNewsResource = null,
+            userUrls = emptyList(),
             onTopicCheckedChanged = { _, _ -> },
             saveFollowedTopics = {},
             onNewsResourcesCheckedChanged = { _, _ -> },
             onNewsResourceViewed = {},
             onTopicClick = {},
             onDeepLinkOpened = {},
+            onAddUrl = {},
         )
     }
 }
@@ -565,12 +717,14 @@ fun ForYouScreenTopicSelection(
                 feed = userNewsResources,
             ),
             deepLinkedUserNewsResource = null,
+            userUrls = emptyList(),
             onTopicCheckedChanged = { _, _ -> },
             saveFollowedTopics = {},
             onNewsResourcesCheckedChanged = { _, _ -> },
             onNewsResourceViewed = {},
             onTopicClick = {},
             onDeepLinkOpened = {},
+            onAddUrl = {},
         )
     }
 }
@@ -584,12 +738,14 @@ fun ForYouScreenLoading() {
             onboardingUiState = OnboardingUiState.Loading,
             feedState = NewsFeedUiState.Loading,
             deepLinkedUserNewsResource = null,
+            userUrls = emptyList(),
             onTopicCheckedChanged = { _, _ -> },
             saveFollowedTopics = {},
             onNewsResourcesCheckedChanged = { _, _ -> },
             onNewsResourceViewed = {},
             onTopicClick = {},
             onDeepLinkOpened = {},
+            onAddUrl = {},
         )
     }
 }
@@ -608,12 +764,14 @@ fun ForYouScreenPopulatedAndLoading(
                 feed = userNewsResources,
             ),
             deepLinkedUserNewsResource = null,
+            userUrls = emptyList(),
             onTopicCheckedChanged = { _, _ -> },
             saveFollowedTopics = {},
             onNewsResourcesCheckedChanged = { _, _ -> },
             onNewsResourceViewed = {},
             onTopicClick = {},
             onDeepLinkOpened = {},
+            onAddUrl = {},
         )
     }
 }

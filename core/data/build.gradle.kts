@@ -37,6 +37,9 @@ dependencies {
 
     implementation(projects.core.analytics)
     implementation(projects.core.notifications)
+    
+    // Jsoup for HTML parsing
+    implementation("org.jsoup:jsoup:1.16.2")
 
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(libs.kotlinx.serialization.json)
